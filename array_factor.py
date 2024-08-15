@@ -1,15 +1,11 @@
 import copy
-import sys
 import numpy as np
 import scipy.linalg
 from scipy.constants import speed_of_light
-import scipy.signal.windows as windows
 import scipy.optimize as optimize
 import matplotlib.pyplot as plt
-import matplotlib
 
 import plotting
-from genetic_solver import GeneticSolver
 
 #matplotlib.use('TkAgg')
 

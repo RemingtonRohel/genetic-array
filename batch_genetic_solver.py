@@ -1,8 +1,5 @@
-import copy
-import random
 import numpy as np
 import argparse
-from scipy.constants import speed_of_light
 import matplotlib.pyplot as plt
 import h5py
 
@@ -158,10 +155,10 @@ def main():
         with h5py.File(outfile, 'a') as f:
             group_name = f'{int(freq/1000):05d}'
             g = f.create_group(group_name)
-            g.create_dataset(f'phases', data=best_weights_deg)
-            g.create_dataset(f'scores', data=best_scores)
-            g.create_dataset(f'array_factor', data=np.array(gains))
-            g.create_dataset(f'grid', data=azimuths)
+            g.create_dataset('phases', data=best_weights_deg)
+            g.create_dataset('scores', data=best_scores)
+            g.create_dataset('array_factor', data=np.array(gains))
+            g.create_dataset('grid', data=azimuths)
 
         # Plot the results for this configuration
         title = '{:.3f} MHz'.format(freq * 1e-6)
