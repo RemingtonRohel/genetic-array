@@ -8,6 +8,7 @@ import array_factor as af
 matplotlib.use('QtAgg')
 
 def cached_weights(num_antennas, freq):
+    # {frequency in Hz : phases for the first half of the antennas, in degrees }
     cached_values_16_antennas = {
         12.0e6: [0., 164.32834753, 287.84658829, 347.83174452, 433.84544554, 532.75801346, 621.67692216, 594.45230541],
     }
