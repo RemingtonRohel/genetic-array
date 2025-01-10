@@ -58,6 +58,7 @@ def main():
     parser.add_argument('--spacing', type=float, help='antenna spacing in meters', default=15.24)
     parser.add_argument('--left-bound', type=float, help='left bound of FOV in degrees CW from boresight', default=-27.0)
     parser.add_argument('--right-bound', type=float, help='right bound of FOV in degrees CW from boresight', default=27.0)
+    parser.add_argument('--antenna-pattern', type=str, help='.npz file with antenna pattern data')
     parser.add_argument('outdir', type=str, help='directory to put results and plots in')
     parser.add_argument('freqs', nargs='+', type=float, help='frequencies in kHz to optimize for')
     args = parser.parse_args()
@@ -84,10 +85,10 @@ def main():
         labels.append(label)
 
     # Common mode frequencies
-    freqs = [x * 1000 for x in args.freqs] # Hz  [10.4e6, 10.5e6, 10.6e6, 10.7e6, 10.8e6, 10.9e6, 12.2e6, 12.3e6, 12.5e6, 13.0e6, 13.1e6, 13.2e6]  # Hz
-    ripples = [2.0, 3.0, 4.0, 5.0]            # dB
-    sidelobe_levels = [-12]                   # dB
-    transition_widths = [5.0]                   # degrees
+    freqs = [x * 1000 for x in args.freqs] # Hz
+    ripples = [2.0, 3.0, 4.0, 5.0]  # dB
+    sidelobe_levels = [-20, -17, -14]  # dB
+    transition_widths = [5.0]  # degrees
     population_size = 200
     azimuthal_points = 200
     num_trials = 10
@@ -99,6 +100,10 @@ def main():
 
     for freq in freqs:
         print("Frequency: {:.3f} MHz".format(freq * 1e-6))
+        el_factor = np.load(args.antenna_pattern)
+        interp_data = np.interp(azimuths, el_factor['az'] - 90,
+                                el_factor['data'][70])  # 70 is the colatitude, in degrees
+        interp_data -= interp_data.max()
         best_weights = []
         best_scores = []
         perfect = False
@@ -111,7 +116,7 @@ def main():
                     scores = []
                     for trial in range(num_trials):
                         gs = GeneticSolver(num_antennas, antenna_spacing, freq, ripple, sidelobe, passband, width,
-                                           population_size, azimuthal_points)
+                                           azimuthal_points, population_size, element_factor=el_factor)
                         add_configuration(gs.weights, 'Trial {}'.format(trial))
                         scores.append(gs.best_score)
                         if gs.best_score == 0.0:
@@ -127,7 +132,7 @@ def main():
                     perfect = (scores[best_score_idx] == 0.0)
 
                     # Compute the array factor for each set of weights.
-                    af = array_factor.array_factor(weights, antenna_positions, freq, els, azimuths)
+                    af = array_factor.array_factor(weights, antenna_positions, freq, els, azimuths, el_factor=np.power(10, interp_data/20))
 
                     gains = [af[i, 0, :] for i in range(af.shape[0])]
 
@@ -147,7 +152,7 @@ def main():
             print(f"Score: {s:.3f}\tPhases (deg): {variable_phases}")
 
         # Compute the array factor for each set of weights.
-        af = array_factor.array_factor(best_weights, antenna_positions, freq, els, azimuths)
+        af = array_factor.array_factor(best_weights, antenna_positions, freq, els, azimuths, el_factor=np.power(10, interp_data/20))
 
         gains = [af[i, 0, :] for i in range(af.shape[0])]
 

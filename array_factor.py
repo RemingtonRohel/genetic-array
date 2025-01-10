@@ -10,7 +10,7 @@ import plotting
 #matplotlib.use('TkAgg')
 
 
-def array_factor(weights, antenna_positions, freq, els, phis):
+def array_factor(weights, antenna_positions, freq, els, phis, el_factor=None):
     """Computes the array factor for the given array configuration.
 
     Parameters
@@ -38,6 +38,9 @@ def array_factor(weights, antenna_positions, freq, els, phis):
     v = np.exp(1j * exponents)
 
     af = np.einsum('ij,jkl->ikl', weights, v) / len(antenna_positions)
+
+    if el_factor is not None:
+        af *= el_factor
 
     return 20 * np.log10(np.abs(af))
 
@@ -126,41 +129,6 @@ def linear_phase(antenna_positions, freq, direction):
     return np.exp(1j * angles)
 
 
-def parabolic_phase(num_antennas):
-    """Creates a parabolic phase progression across the array.
-
-    Parameters
-    ----------
-    num_antennas: int
-        Number of antennas in the array.
-
-    Returns
-    -------
-    phases: np.array
-        Array of phase values for each antenna.
-    """
-    antennas = np.linspace(-(num_antennas-1)/2, (num_antennas-1)/2, num_antennas)
-    angles = 8 * np.pi / ((num_antennas - 1) * (num_antennas - 1)) * np.multiply(antennas, antennas) - np.pi
-    return np.exp(1j * angles)
-
-
-def cosine_weighting(num_antennas):
-    """Creates a cosine-window weighting across the array.
-
-    Parameters
-    ----------
-    num_antennas: int
-        Number of antennas in the array.
-
-    Returns
-    -------
-    weights: np.array
-        An amplitude weighting for each antenna in the array.
-    """
-    antennas = np.linspace(-(num_antennas-1)/2, (num_antennas-1)/2, num_antennas)
-    return np.cos(antennas * np.pi/num_antennas)
-
-
 def ideal_pattern(phis):
     """Returns the ideal radiation pattern with the given angular points.
 
@@ -181,389 +149,6 @@ def ideal_pattern(phis):
     pattern[passband] = 1.0 / 4
 
     return pattern
-
-
-def deviation_score(array_factor, phi_angles):
-    """Computes the score of the array factor compared to the desired pattern.
-
-    The score is a number which represents the closeness of the array factor to the
-    desired widebeam pattern, with a score of 0 being perfect alignment. A lower
-    score is better.
-
-    Parameters
-    ----------
-    array_factor: np.array
-        A vector of the array factor vs. azimuthal angle, from (0, pi).
-    phi_angles: np.array
-        A vector of the azimuthal angles corresponding to array_factor, in radians.
-
-    Returns
-    -------
-    score: float
-        Score of the array factor.
-    """
-    angular_res = phi_angles[1] - phi_angles[0]     # radians
-    perfect_factor = ideal_pattern(phi_angles)
-
-    passband = np.nonzero(perfect_factor)
-    stopband = np.nonzero(perfect_factor == 0)      # all other indices
-
-    ripple = np.max(array_factor[passband]) - np.min(array_factor[passband])
-
-    diff = perfect_factor - array_factor
-    square_integral = np.sqrt(np.sum(np.multiply(diff, diff)) * angular_res)
-
-    sidelobe_level = np.min(array_factor[passband]) - np.max(array_factor[stopband])
-
-    score = 1/(1 + np.exp(sidelobe_level)) + 2 * ripple #+ square_integral / 5
-    return score
-
-
-def random_deviation(weights, scale):
-    """Randomly nudges a parameter of the weighting factor array.
-
-    Parameters
-    ----------
-    weights: np.array
-        Array of complex weighting factors for the array.
-    scale: float
-        Scaling factor for the random deviations.
-
-    Returns
-    -------
-    weights: np.array
-        Array of weighting factors with a nudged weight.
-    """
-    num_antennas = len(weights)
-    half_antennas = int(np.ceil(num_antennas / 2))
-    real_nudge = np.random.rand(half_antennas) * scale
-    imag_nudge = np.random.rand(half_antennas) * scale * 1j
-    # antenna = np.random.randint(0, np.ceil(num_antennas / 2))
-
-    for antenna in range(half_antennas):
-        mag = np.abs(weights[antenna] + real_nudge[antenna] + imag_nudge[antenna])
-        if mag > 1.0:
-            pass
-        else:
-            weights[antenna] += real_nudge[antenna] + imag_nudge[antenna]
-            weights[num_antennas - antenna - 1] = weights[antenna]      # Keep the weights symmetric
-
-    return weights
-
-
-def find_weights(antenna_positions, angular_res, freq, max_iterations):
-    """Finds the optimum set of complex weighting factors for the array.
-
-    Parameters
-    ----------
-    antenna_positions: np.array
-        Positions of the antennas in the array, in meters.
-    angular_res: float
-        Angular resolution of the coordinate system, in degrees.
-    freq: float
-        Frequency in Hz.
-    max_iterations: int
-        Maximum number of iterations.
-
-    Returns
-    -------
-    weights: np.array
-        Array of complex weighting factors for each antenna.
-    """
-    num_antennas = len(antenna_positions)
-    best_weights = np.multiply(parabolic_phase(num_antennas), cosine_weighting(num_antennas))
-    phis = np.linspace(0, 180, round(180/angular_res)) * np.pi / 180.
-    num_iterations = 0
-    score = 10
-    prev_score = 10
-
-    # Plot the weighting factors
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex='all')
-    ax1.plot(range(num_antennas), np.abs(best_weights), label='Cosine')
-    ax2.plot(range(num_antennas), np.angle(best_weights) * 180 / np.pi, label='Parabolic')
-
-    while score > 0.2:
-        if num_iterations == 0:
-            weights = best_weights
-        else:
-            weights = random_deviation(copy.deepcopy(best_weights), 0.05)
-
-        af = array_factor(weights, antenna_positions, freq, [90.0], phis)
-        # af = 20 * np.log10(np.abs(af))
-        af = np.abs(af)
-
-        score = deviation_score(af[0, :], phis)
-
-        if score < prev_score:
-            best_weights = weights
-            prev_score = score
-            ax1.plot(range(num_antennas), np.abs(best_weights), label=num_iterations)
-            ax2.plot(range(num_antennas), np.angle(best_weights) * 180 / np.pi, label=num_iterations)
-
-        num_iterations += 1
-        if num_iterations >= max_iterations:
-            print("Iteration {}".format(num_iterations))
-            break
-    print("Score: {}".format(prev_score))
-
-    ax1.set_ylabel("Magnitude")
-    ax1.legend()
-    ax2.set_xlabel("Antenna Index")
-    ax2.set_ylabel("Phase (degrees)")
-    ax2.legend()
-    plt.show()
-
-    return best_weights
-
-
-def least_squares_weights(num_antennas, freq, passband, antenna_spacing, resolution):
-    """Finds the least-squares solution for the antenna weights.
-
-    The least-squares solution x of the equation Ax = b is computed, where b is the desired azimuthal
-    gain of the system (1 in passband, 0 outside), x is the antenna weights, and A is the matrix of wavevectors for
-    each antenna for all azimuthal directions.
-
-    Parameters
-    ----------
-    num_antennas: int
-        Number of equally spaced transmitting antennas.
-    freq: float
-        Frequency in Hz.
-    passband: tuple
-        FOV of the array as (left bound, right bound) in degrees CW of boresight.
-    antenna_spacing: float
-        Distance between antennas, in meters.
-    resolution: float
-        Azimuthal angular resolution, in degrees.
-
-    Returns
-    -------
-    weights: np.array
-        Complex weight for each antenna in the array.
-    """
-    azimuths = np.arange(-90, 90, resolution)
-
-    b = np.ones(azimuths.shape)
-    b[np.argwhere(passband[0] > azimuths)] = 0
-    b[np.argwhere(azimuths > passband[1])] = 0
-
-    k0 = 2 * np.pi * freq / speed_of_light
-
-    antenna_indices = np.arange(num_antennas) - ((num_antennas - 1) / 2)
-    wavevectors = np.sin(azimuths * np.pi / 180.0) * k0
-
-    # An array of wavevectors for each antenna and azimuth. Dimensions [num_azimuths, num_antennas]
-    arr = np.outer(wavevectors, antenna_indices)
-
-    A = np.exp(-1j * arr * antenna_spacing)
-
-    weights, _, _, _ = scipy.linalg.lstsq(A, b)
-    max_mag = np.max(np.abs(weights))
-    weights = weights / max_mag
-
-    print(np.max(np.abs(weights)))
-    print(np.min(np.abs(weights)))
-    for w in weights:
-        print('{:.2f}'.format(np.abs(w)))
-    print('Normalized power: {}'.format(np.sum(np.abs(weights)) / num_antennas))
-
-    return weights
-
-
-def uniform_optimizer(num_antennas, freq, passband, antenna_spacing, resolution):
-    """
-    Computes the ideal weighting factors for each antenna subject to the constraint that the magnitude of each
-    weight is equal to one. This function uses the method outlined in 'Magnitude Least–Squares Fitting via Semidefinite
-    Programming with Applications to Beamforming and Multidimensional Filter Design', by Peter Kassakian (2005)
-    https://www.cnmat.berkeley.edu/sites/default/files/attachments/2005_Magnitude_Least--Squares_Fitting_via_Semidefinite_Programming.pdf
-
-    Parameters
-    ----------
-    num_antennas: int
-        Number of linearly spaced antennas in the array.
-    freq: float
-        Frequency in Hz.
-    passband: tuple
-        Tuple of (left bound, right bound) of the desired FOV.
-    antenna_spacing: float
-        Uniform inter-element spacing of the antenna array.
-    resolution: float
-        Azimuthal angular resolution, in degrees.
-
-    Returns
-    -------
-    weights: np.array
-        A set of complex weighting factors, one per antenna.
-    """
-    azimuths = np.arange(-90, 90, resolution)
-    m = azimuths.size
-
-    b = np.ones(azimuths.shape)
-    b[np.argwhere(passband[0] > azimuths)] = 0
-    b[np.argwhere(azimuths > passband[1])] = 0
-    B = np.identity(m) * b
-
-    k0 = 2 * np.pi * freq / speed_of_light
-    antenna_indices = np.arange(num_antennas) - ((num_antennas - 1) / 2)
-    wavevectors = np.sin(azimuths * np.pi / 180.0) * k0
-
-    # An array of wavevectors for each antenna and azimuth. Dimensions [num_azimuths, num_antennas]
-    arr = np.outer(wavevectors, antenna_indices)
-
-    A = np.exp(-1j * arr * antenna_spacing)
-
-    # Some convenience matrices
-    temp1 = np.matmul(A.conj().T, A)
-    temp2 = np.matmul(A, np.linalg.inv(temp1))
-    temp3 = np.matmul(temp2, A.conj().T)
-    U = temp3 - np.identity(A.shape[0])
-    W = np.matmul(np.matmul(U, B).conj().T, np.matmul(U, B))
-    W_tilde = np.zeros((2*m, 2*m))
-    W_tilde[:m, :m] = np.real(W)
-    W_tilde[:m, m:] = -1 * np.imag(W)
-    W_tilde[m:, :m] = np.imag(W)
-    W_tilde[m:, m:] = np.real(W)
-
-    C = cvxpy.Variable((2*m, 2*m))
-    constraints = [C >> 0]
-    constraints += [C[i,i] + C[i+m,i+m] == 1 for i in range(m)]
-    prob = cvxpy.Problem(cvxpy.Minimize(cvxpy.trace(C @ W_tilde)), constraints)
-    prob.solve()
-
-    C_opt = C.value
-    num_iterations = 100
-    min_val = 0
-    for i in range(num_iterations):
-        s_bar = np.random.multivariate_normal(np.zeros(2*m), C_opt)
-        s_c = s_bar[:m] + 1j * s_bar[m:]
-        np.divide(s_c, np.abs(s_c))
-        score = np.matmul(np.matmul(s_c.conj().T, W), s_c)
-        if i == 0:
-            min_val = score
-            s_opt = s_c
-        elif score < min_val:
-            min_val = score
-            s_opt = s_c
-
-    weights = np.matmul(np.matmul(np.matmul(temp1, A.conj().T), B), s_opt)
-
-    return weights / np.max(np.abs(weights))
-
-
-def phase_only_synthesis(num_antennas, freq, passband, transition_width, psl, ripple, antenna_spacing, resolution):
-    """
-    Computes the ideal weighting factors for each antenna, fixing the magnitude of each weight to 1.
-    This method uses some relaxation methods to find an ideal solution which matches a given passband ripple and
-    maximum sidelobe level. Taken from 'Phase-Only Pattern Synthesis for Linear Antenna Arrays' by Liang et al. (2017).
-    https://ieeexplore-ieee-org.cyber.usask.ca/document/8103884/references#references
-
-
-    Parameters
-    ----------
-    num_antennas: int
-        Number of linearly spaced antennas in the array.
-    freq: float
-        Frequency in Hz.
-    passband: tuple
-        Tuple of (left bound, right bound) of the desired FOV.
-    transition_width: float
-        Width of transition region in degrees.
-    psl: float
-        Maximum sidelobe level in dB down from passband.
-    ripple: float
-        Maximum deviation from 0 dB within the passband, in dB.
-    antenna_spacing: float
-        Uniform inter-element spacing of the antenna array.
-    resolution: float
-        Azimuthal angular resolution, in degrees.
-
-    Returns
-    -------
-    weights: np.array
-        A set of complex weighting factors, one per antenna.
-    """
-    upper_ripple = np.power(10, ripple / 10)
-    lower_ripple = np.power(10, -ripple / 10)
-
-    pb_azimuths = np.arange(passband[0], passband[1], resolution)
-    sb_low_azimuths = np.arange(-90, passband[0] - transition_width, resolution)
-    sb_high_azimuths = np.arange(passband[1] + transition_width, 90, resolution)
-    N = pb_azimuths.size + sb_low_azimuths.size + sb_high_azimuths.size
-
-    # Create the upper and lower bounds for the solution at any given azimuthal direction.
-    upper_bound = np.ones(N) * upper_ripple
-    upper_bound[pb_azimuths.size:] = np.power(10, -psl/10)
-
-    lower_bound = np.ones(N) * lower_ripple
-    lower_bound[pb_azimuths.size:] = 0
-
-    azimuths = np.concatenate((pb_azimuths, sb_low_azimuths, sb_high_azimuths))
-    k0 = 2 * np.pi * freq / speed_of_light
-    antenna_indices = np.arange(num_antennas) - ((num_antennas - 1) / 2)
-    wavevectors = np.sin(azimuths * np.pi / 180.0) * k0
-
-    # An array of wavevectors for each antenna and azimuth. Dimensions [num_antennas, num_azimuths]
-    a = np.outer(antenna_indices, wavevectors)
-    a = np.exp(-1j * a * antenna_spacing)
-
-    # Initialize the parameters that get iteratively updated.
-    xi = np.random.uniform()
-    phi = np.random.uniform(size=(num_antennas, 1)) * 2 * np.pi
-    lam = np.zeros((1, N))
-    A = np.identity(num_antennas)
-    rho = 1
-
-    steering_vec = np.matmul(A, a)
-    a_H = a.conj().T
-
-    x = xi * np.matmul(np.exp(-1j * phi.T), steering_vec)
-
-    num_iterations = 300
-
-    # Iterate a set number of times to reach a solution.
-    for t in range(num_iterations):
-        # Calculate new values for x
-        x_tilde = x - lam / rho
-        mag_sq = np.abs(x_tilde) * np.abs(x_tilde)
-        for i in range(x.size):
-            if mag_sq[0, i] >= upper_bound[i]:
-                x[0, i] = np.sqrt(upper_bound[i]) * np.exp(1j * np.angle(x_tilde[0, i]))
-            elif mag_sq[0, i] <= lower_bound[i]:
-                x[0, i] = np.sqrt(lower_bound[i]) * np.exp(1j * np.angle(x_tilde[0, i]))
-            else:
-                x[0, i] = x_tilde[0, i]
-
-        def calculate_EF(phi):
-            """Calculate values E and F from the paper cited above."""
-            temp1 = np.matmul(np.exp(-1j * phi.T), steering_vec)
-            temp2 = np.matmul(A, np.exp(1j * phi))
-            temp3 = np.matmul(a_H, temp2)
-            E = rho / 2 * np.sum(np.matmul(temp1, temp3))
-
-            temp4 = np.matmul((x + lam/rho).conj(), temp1)
-            temp5 = np.matmul((x + lam/rho), temp3)
-            F = 1 - (rho / 2) * (np.sum(temp4) + np.sum(temp5))
-            return E, F
-
-        def cost_function(phi):
-            """Returns a scalar cost value based on the paper cited above."""
-            E, F = calculate_EF(phi)
-            return -(F * F) / (4 * E)
-
-        result = optimize.minimize(cost_function, phi, method='BFGS')
-        if result.success:
-            phi = result.x
-        else:
-            raise RuntimeError("Could not converge to a value.")
-
-        E, F = calculate_EF(phi)
-        xi = -F / (2 * E)
-        lam_real = np.real(lam) + rho * np.real(x - xi * np.matmul(np.exp(-1j * phi), steering_vec))
-        lam_imag = np.imag(lam) + rho * np.imag(x - xi * np.matmul(np.exp(-1j * phi), steering_vec))
-        lam = lam_real + 1j * lam_imag
-
-    weights = np.matmul(A, np.exp(1j * phi))
-    return weights
 
 
 def kinsey_weights(taper, freq, passband, antenna_spacing):
@@ -605,34 +190,6 @@ def kinsey_weights(taper, freq, passband, antenna_spacing):
     weights = np.exp(1j * phases)
 
     return weights * taper
-
-
-def quadratic_beamspoiling(num_antennas, antenna_spacing, freq):
-    """Returns the quadratic beamspoiling applied to the tapers.
-
-    Parameters
-    ----------
-    num_antennas: int
-        Number of antennas in the array.
-    antenna_spacing: float
-        Uniform antenna spacing, in meters.
-    freq: float
-        Frequency in Hz.
-
-    Returns
-    -------
-    phases: np.array
-        Complex phases for each antenna.
-    """
-    phis = np.zeros(num_antennas)
-    antenna_indices = np.linspace(-(num_antennas-1)/2, (num_antennas-1)/2, num_antennas)
-    wavelength = speed_of_light / freq
-    delta_k = 2 * np.pi * np.sin(np.pi * 2 * 24.3 / 180) / wavelength
-
-    for idx, i in enumerate(antenna_indices):
-        phis[idx] = i*i * antenna_spacing * delta_k / (2 * (num_antennas - 1))
-
-    return np.exp(1j * phis)
 
 
 def cached_genetic_weights(num_antennas, freq):
@@ -705,7 +262,7 @@ def plot_full_array_factor(gains):
     plt.close()
 
 
-def plot_horizontal_gain(fig, ax, gains, angles, labels):
+def plot_horizontal_gain(fig, ax, gains, angles, labels, colors, bounds=True):
     """Plot the gain pattern in the horizontal plane.
 
     Parameters
@@ -723,14 +280,15 @@ def plot_horizontal_gain(fig, ax, gains, angles, labels):
     #fig.suptitle(title)
 
     for i in range(len(gains)):
-        ax.plot(angles, gains[i], label=labels[i])
+        ax.plot(angles, gains[i], label=labels[i], c=colors[i])
 
-    ax.axvline(x=-24.3-3.24/2, color='k', linestyle='--')
-    ax.axvline(x=24.3+3.24/2, color='k', linestyle='--')
+    if bounds:
+        ax.axvline(x=-38.88, color='k', linestyle='--')
+        ax.axvline(x=38.88, color='k', linestyle='--')
     ax.yaxis.grid()
-    ax.set_xlabel('Azimuth (degrees)')
-    # ax.set_ylim([-25, 0])
-    ax.set_ylabel('Normalized Array Factor (dB)')
+    ax.set_xlabel('Azimuth [degrees]')
+    ax.set_ylim([-40, 0])
+    ax.set_ylabel('Normalized Array Factor [dB]')
     #ax.legend()
     #plt.savefig('/home/remington/kinsey_gain.pdf', bbox_inches='tight')
     #plt.close()
@@ -779,31 +337,6 @@ def plot_phases(fig, ax, weights, labels, legend=True):
     # plt.close()
 
 
-def plot_surface(thetas, phis, array_factor):
-    """Plots a 3D surface of the array factor in all directions.
-
-    Parameters
-    ----------
-    thetas: np.array
-        Array of zenith angles in degrees.
-    phis: np.array
-        Array of azimuthal angles in degrees.
-    array_factor: np.ndarray
-        Array of array factor magnitudes for (theta, phi) points.
-    """
-    theta, phi = np.meshgrid(phis * np.pi/180, thetas * np.pi/180)
-    x = np.ravel(array_factor * np.sin(theta) * np.cos(phi))
-    y = np.ravel(array_factor * np.sin(theta) * np.sin(phi))
-    z = np.ravel(array_factor * np.cos(theta))
-
-    from matplotlib.tri import Triangulation
-    tri = Triangulation(np.ravel(theta), np.ravel(phi))
-    plt.figure()
-    ax = plt.axes(projection='3d')
-    ax.plot_trisurf(x, y, z, triangles=tri.triangles, cmap='viridis', linewidths=0.2)
-    plt.show()
-
-
 def power_relative_to_full(weights):
     """Returns the power output of weights relative to a full amplitude array.
 
@@ -836,105 +369,3 @@ def create_labels(labels, powers):
     """
     full_labels = [l + ' ({:.2f}dB)'.format(powers[i]) for i, l in enumerate(labels)]
     return full_labels
-
-
-def main():
-    num_antennas = 16   # main array
-    freq = 10.8e6       # Hz
-    angular_res = 0.5   # degrees
-    left_bound = -24.3  # FOV boundary, in degrees right of boresight
-    right_bound = 24.3  # FOV boundary, in degrees right of boresight
-    direction = 0       # degrees right of boresight
-    elevation = 0       # degrees up from horizon
-    wavelength = speed_of_light / freq
-    antenna_spacing = 15.24     # meters
-    max_iterations = 1000
-    weights = []
-    labels = []
-
-    # Useful constants
-    k = 2 * np.pi * freq / speed_of_light
-    direction_rad = direction * np.pi / 180.0
-
-    # Position of each antenna along y-axis
-    antenna_positions = default_antenna_positions(num_antennas, antenna_spacing)
-
-    # Arrays of spherical coordinate points
-    # els, azimuths = default_spatial_arrays(angular_res)
-    els = np.array([elevation])
-    azimuths = np.arange(-90, 90, angular_res)
-
-    # Search for the optimum weighting factors.
-    # weights = find_weights(antenna_positions, angular_res, freq, max_iterations)
-
-    passband = (left_bound - direction, right_bound - direction)
-
-    def add_configuration(w, label):
-        """Add a set of weights with associated label for simulation."""
-        weights.append(w)
-        labels.append(label)
-
-    # gs = GeneticSolver(num_antennas, antenna_spacing, freq, 1.0, -6, passband, 5, 200, 200)
-    # add_configuration(gs._weights, 'Genetic')
-    # add_configuration(phase_only_synthesis(num_antennas, freq, passband, 5, 14, 1.5, antenna_spacing, angular_res), 'POAPS')
-    # add_configuration(uniform_optimizer(num_antennas, freq, passband, antenna_spacing, 1.0), 'SDP Optimized')
-    # add_configuration(least_squares_weights(num_antennas, freq, passband, antenna_spacing, angular_res), 'Least Squares')
-    # add_configuration(kinsey_weights(windows.hamming(num_antennas), freq, passband, antenna_spacing), 'Kinsey-Hamming')
-    # add_configuration(uniform_weights(num_antennas), 'Standard Beamforming')
-    #add_configuration(kinsey_weights(uniform_weights(num_antennas), freq, passband, antenna_spacing), 'Kinsey')
-    weights_8 = kinsey_weights([0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0], freq, passband, antenna_spacing)
-    ref = np.exp(-1j * np.angle(weights_8[4]))
-    add_configuration(weights_8 * ref, 'Kinsey')
-    #add_configuration(kinsey_weights([0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0], freq, passband, antenna_spacing), 'Kinsey')
-    #add_configuration(uniform_weights(num_antennas), 'Standard Beamforming')
-    #normal = cached_genetic_weights(16, freq)
-    #add_configuration(normal, 'Genetic Solver')
-
-    # antenna_10_down = copy.deepcopy(normal)
-    # antenna_10_down[10] = 0.0
-    # antennas_4_and_10_down = copy.deepcopy(normal)
-    # antennas_4_and_10_down[4] = 0.0
-    # antennas_4_and_10_down[10] = 0.0
-    # add_configuration(antenna_10_down, 'INV')
-    # add_configuration(antennas_4_and_10_down, 'RKN')
-
-    add_configuration(cached_genetic_weights(8, freq), 'Genetic')
-    #add_configuration([0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0], '2 Antennas')
-    #add_configuration(kinsey_weights(uniform_weights(num_antennas), freq, passband, antenna_spacing), 'Kinsey')
-    add_configuration(cached_genetic_weights(16, freq), '16 Antennas')
-    add_configuration(uniform_weights(num_antennas), 'Standard Beamforming')
-    # add_configuration([0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0], 'Three Antennas')
-
-    weights = np.array(weights)
-
-    # Compute the array factor for each set of weights.
-    af = array_factor(weights, antenna_positions, freq, els, azimuths)
-
-    # Plot the array pattern
-    # plot_full_array_factor(af[0, ...])
-
-    gains = [af[i, 0, :] for i in range(af.shape[0])]
-    powers = power_relative_to_full(weights)
-
-    full_labels = labels #create_labels(labels, powers)
-
-    # Plot the zero-elevation array factor
-    #title = 'Array Factor at {:.1f} MHz'.format(freq * 1e-6)
-    #plot_horizontal_gain(gains, azimuths, full_labels, title)
-
-    # Plot the complex weights for each antenna
-    title = 'Relative Phases at {:.1f} MHz'.format(freq * 1e-6)
-    fig, axes = plt.subplots(2, 1, figsize=(6, 6))
-    fig.tight_layout()
-    plot_horizontal_gain(fig, axes[0], gains, azimuths, labels)
-    plot_phases(fig, axes[1], weights, labels)
-    axes[0].set_ylim(-40)
-    axes[1].set_title('')
-    # plt.savefig('/home/remington/8_antennas_all.pdf', bbox_inches='tight')
-    plt.show()
-    plt.close()
-    # plot_surface(els, azimuths, af)
-
-
-if __name__ == '__main__':
-    main()

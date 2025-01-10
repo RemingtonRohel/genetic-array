@@ -13,7 +13,7 @@ class GeneticSolver:
     https://ieeexplore-ieee-org.cyber.usask.ca/document/1377611
     """
     def __init__(self, num_antennas, antenna_spacing, freq, pb_ripple, sb_gain, passband, transition_width, num_points,
-                 pop_size):
+                 pop_size, element_factor=None):
         self._population = pop_size
         self._num_antennas = num_antennas
         # Symmetric, and fix the end antennas to 0 phase
@@ -31,6 +31,12 @@ class GeneticSolver:
                                        np.einsum('i,j->ji', self._antenna_positions, self._sine_space))
 
         angles = np.arcsin(self._sine_space) * 180 / np.pi
+        self.element_factor = None
+        if element_factor is not None:
+            interp_data = np.interp(angles, element_factor['az'] - 90,
+                                    element_factor['data'][70])  # 70 is the colatitude, in degrees
+            interp_data -= interp_data.max()
+            self.element_factor = np.power(10, interp_data / 20)
         upper_bounds = np.ones(angles.size) * sb_upper_bound
         upper_bounds[np.argwhere(angles > passband[0] - transition_width)] = np.inf
         # upper_bounds[np.argwhere(angles > passband[0])] = pb_upper_bound
@@ -267,7 +273,7 @@ class GeneticSolver:
         symmetric_members = np.zeros((members.shape[0], self._num_antennas))
         symmetric_members[:, 1:self._num_weights+1] = members
         symmetric_members[:, self._num_weights+1:-1] = np.fliplr(members)
-        ff = self.array_factor(np.exp(1j * symmetric_members))
+        ff = self.array_factor(np.exp(1j * symmetric_members)) * self.element_factor
         scale = 1 / np.max(np.abs(ff), axis=1)    # Normalize so that max amplitude is 1 in each far field pattern
         ff = np.einsum('i,ij->ij', scale, ff)
         return 20 * np.log10(np.abs(ff))
