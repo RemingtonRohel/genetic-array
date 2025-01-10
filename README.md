@@ -5,6 +5,7 @@ This is a simple package for computing wide beam patterns for SuperDARN arrays.
 ## Contents
 
 * `requirements.txt`: Use this to install the necessary deps with `pip install -r requirements.txt`
+* `beam_corrections.py`: This script is used to find the necessary receiver beam directions to correct combined tx/rx beam azimuthal discrepancies when transmitting a wide beam.
 * `batch_genetic_solver.py`: This is the main script to use for computing the necessary antenna phases for generating a wide beam pattern. Run with the `-h` flag to see the usage.
 * `genetic_solver.py`: This contains the solver class which is used under the hood of `batch_genetic_solver.py`. 
 * `array_factor.py`: This is a bit of a hodge-podge file containing some utility functions for computing far-field array factors, and numerous other things.
