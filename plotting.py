@@ -1,12 +1,14 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib
+import shutil
 
 # Global values that will be used by other scripts
 matplotlib.rcParams['backend'] = 'Agg'
-matplotlib.rcParams['text.usetex'] = True
-matplotlib.rcParams['font.family'] = 'serif'
-matplotlib.rcParams['font.serif'] = 'cm'
+if shutil.which("latex"):
+    matplotlib.rcParams['text.usetex'] = True
+    matplotlib.rcParams['font.family'] = 'serif'
+    matplotlib.rcParams['font.serif'] = 'cm'
 
 SMALL_SIZE = 10
 MEDIUM_SIZE = 12

@@ -1,13 +1,8 @@
-import copy
 import numpy as np
-import scipy.linalg
 from scipy.constants import speed_of_light
-import scipy.optimize as optimize
 import matplotlib.pyplot as plt
 
 import plotting
-
-#matplotlib.use('TkAgg')
 
 
 def array_factor(weights, antenna_positions, freq, els, phis, el_factor=None):

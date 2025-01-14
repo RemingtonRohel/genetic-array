@@ -58,7 +58,7 @@ def main():
     parser.add_argument('--spacing', type=float, help='antenna spacing in meters', default=15.24)
     parser.add_argument('--left-bound', type=float, help='left bound of FOV in degrees CW from boresight', default=-27.0)
     parser.add_argument('--right-bound', type=float, help='right bound of FOV in degrees CW from boresight', default=27.0)
-    parser.add_argument('antenna-pattern', type=str, help='.npz file with antenna pattern data')
+    parser.add_argument('antenna_pattern', type=str, help='.npz file with antenna pattern data')
     parser.add_argument('outdir', type=str, help='directory to put results and plots in')
     parser.add_argument('freqs', nargs='+', type=float, help='frequencies in kHz to optimize for')
     args = parser.parse_args()

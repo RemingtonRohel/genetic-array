@@ -5,7 +5,6 @@ import scipy
 
 import array_factor as af
 
-matplotlib.use('QtAgg')
 
 def cached_weights(num_antennas, freq):
     # {frequency in Hz : phases for the first half of the antennas, in degrees }
@@ -81,7 +80,7 @@ if __name__ == '__main__':
     window = chebyshev_30
 
     ### Load in the antenna factor from the NEC simulation ###
-    nec_data = np.load("antenna_factor_12000khz.npz")
+    nec_data = np.load("wallops/wallops_12000khz.npz")
     element_factor = nec_data["data"]
     azs = nec_data["az"]
     colat = nec_data["el"]
@@ -218,8 +217,8 @@ if __name__ == '__main__':
     ax.set_xlabel('Nominal Receiver Beam Direction, $\phi_d$ [degrees]')
     ax.set_ylabel('Median Combined Beam Direction [degrees]')
 
-    # plt.savefig(f'{plot_dir}/el_adjusted_azimuth_nointf.pdf', bbox_inches='tight')
-    plt.show()
+    plt.savefig(f'{plot_dir}/adjusted_beam_directions.pdf', bbox_inches='tight')
+    # plt.show()
     plt.close()
 
     nominal_directions = np.arange(24) * 3.24 - 37.26
