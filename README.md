@@ -10,6 +10,7 @@ This is a simple package for computing wide beam patterns for SuperDARN arrays.
 * `genetic_solver.py`: This contains the solver class which is used under the hood of `batch_genetic_solver.py`. 
 * `array_factor.py`: This is a bit of a hodge-podge file containing some utility functions for computing far-field array factors, and numerous other things.
 * `plotting.py`: Utility functions and parameters for plotting.
+* `reading_nec.py`: A script to take Elevation/Theta output files from 4nec2 and turn them into numpy array files for inclusion in the other scripts.
 
 ## Optimization
 
