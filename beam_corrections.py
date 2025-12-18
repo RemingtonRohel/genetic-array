@@ -6,16 +6,32 @@ import scipy
 import array_factor as af
 
 
-def cached_weights(num_antennas, freq):
+def cached_weights(num_antennas, freq_khz: int):
     # {frequency in Hz : phases for the first half of the antennas, in degrees }
     cached_values_16_antennas = {
-        12.0e6: [0., 164.32834753, 287.84658829, 347.83174452, 433.84544554, 532.75801346, 621.67692216, 594.45230541],
+        12000: [
+            1. - 0.j, -0.59954983 + 0.80033743j, -0.9575112 - 0.2883961j, 0.3799921 - 0.92498976j,
+            0. - 0.j, -0.77975094 + 0.6260899j, -0.02049998 - 0.99978983j, -0.33486956 - 0.9422645j,
+            -0.8806308 - 0.47380316j, 0.35340735 - 0.9354695j, 0.5615241 - 0.82746035j, -0.9999143 - 0.01309336j,
+            -0.00693482 + 0.999976j, 0.86015075 + 0.5100398j, 0. - 0.j, -0.37670207 - 0.92633444j
+        ],
     }
     if num_antennas == 16:
-        if freq in cached_values_16_antennas.keys():
-            angles = cached_values_16_antennas[freq]
-            phases = np.concatenate((angles, np.flip(angles)))
-            weights = np.exp(-1j * np.deg2rad(phases))
+        if freq_khz in cached_values_16_antennas.keys():
+            angles = cached_values_16_antennas[freq_khz]
+            if len(angles) == num_antennas // 2:
+                phases = np.concatenate((angles, np.flip(angles)))
+            elif len(angles) == num_antennas:
+                phases = np.array(angles)
+            else:
+                raise ValueError(
+                    f"Cached values has incongruous shape: expected {num_antennas} or {num_antennas // 2}, "
+                    f"found {len(angles)}"
+                )
+            if np.isrealobj(phases):
+                weights = np.exp(-1j * np.deg2rad(phases))
+            else:
+                weights = phases
         else:
             raise KeyError('Frequency not supported')
     else:
@@ -45,9 +61,10 @@ def calculate_directivities(weights, normalize=False):
 
 
 if __name__ == '__main__':
-    plot_dir = '../../figures/wb'
+    plot_dir = 'test/'
     num_antennas = 16  # main array
     freq = 12.0e6  # Hz
+    freq_khz = int(round(freq / 1000))
     angular_res = 0.01  # degrees
     left_bound = -38.88  # FOV boundary, in degrees right of boresight
     right_bound = 38.88  # FOV boundary, in degrees right of boresight
@@ -93,7 +110,7 @@ if __name__ == '__main__':
     for direction in directions:
         dirs, _, _ = calculate_directivities(
             [
-                cached_weights(16, freq),
+                cached_weights(16, freq_khz),
                 window * af.linear_phase(af.default_antenna_positions(num_antennas, antenna_spacing=antenna_spacing), freq, direction)
             ],
             normalize=True,
@@ -181,12 +198,12 @@ if __name__ == '__main__':
 
         pointing_diffs.append(medians)
 
-        if np.abs(direction + 40.0) < 0.02:
+        colors = ['tab:blue', 'tab:orange', 'tab:green']
+        if np.abs(direction + 3.24) < 0.05:
             fig, ax = plt.subplots(1, 1, figsize=(6, 4))
             ax.yaxis.grid(visible=True)
             fig.tight_layout()
-            labels = ['Main', 'Intf', 'Cross']
-            colors = ['tab:blue', 'tab:orange', 'tab:green']
+            labels = ['Main', 'Intf', 'Main-Intf']
             af.plot_horizontal_gain(fig, ax, 20 * np.log10(np.abs([dirs[0]])), azs, ['$D_t$'], ['tab:purple'], bounds=False)
             af.plot_horizontal_gain(fig, ax, 10 * np.log10(np.abs(convolved)), azs, labels, colors, bounds=False)
             ax.axvline(direction, c='black')
@@ -201,8 +218,8 @@ if __name__ == '__main__':
             ax.set_title('')
             ax.set_ylabel('Relative Power [dB]')
             ax.legend(loc='upper right')
-            # plt.savefig(f'{plot_dir}/el_directivities.pdf', bbox_inches='tight')
-            plt.show()
+            plt.savefig(f'{plot_dir}/el_directivities.png', dpi=300, bbox_inches='tight')
+            # plt.show()
             plt.close()
 
     fig, ax = plt.subplots(1, 1, subplot_kw={'aspect': 'equal'})
@@ -211,13 +228,13 @@ if __name__ == '__main__':
         azimuths = np.array([diffs[d] for diffs in pointing_diffs])
         ax.plot(directions, np.array(azimuths), c=colors[d])
     ax.grid(True)
-    ax.legend(['$\phi_d$', 'Main', 'Cross'])
-    ax.set_xlim([-45, 0])
-    ax.set_ylim([-45, 0])
+    ax.legend(['$\phi_d$', 'Main', 'Main-Intf'])
+    # ax.set_xlim([-45, 0])
+    # ax.set_ylim([-45, 0])
     ax.set_xlabel('Nominal Receiver Beam Direction, $\phi_d$ [degrees]')
     ax.set_ylabel('Median Combined Beam Direction [degrees]')
 
-    plt.savefig(f'{plot_dir}/adjusted_beam_directions.pdf', bbox_inches='tight')
+    plt.savefig(f'{plot_dir}/adjusted_beam_directions.png', dpi=300, bbox_inches='tight')
     # plt.show()
     plt.close()
 

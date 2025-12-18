@@ -8,7 +8,7 @@ from plotting import Multiple
 import array_factor
 
 
-def plot_trials(weights, gains, angles, title, filename):
+def plot_trials(weights, gains, angles, title, filename, vlines=None):
     """Plot the gain pattern in the horizontal plane and phases of each antenna.
 
     Parameters
@@ -30,14 +30,19 @@ def plot_trials(weights, gains, angles, title, filename):
     for i in range(len(gains)):
         ax1.plot(angles, gains[i])
 
-    ax1.axvline(x=-24.3, color='k')
-    ax1.axvline(x=24.3, color='k')
+    if vlines is not None:
+        for vline in vlines:
+            ax1.axvline(x=vline, color='k', linestyle='--')
     ax1.yaxis.grid()
     ax1.set_xlabel('Azimuth (degrees)')
     ax1.set_ylabel('Gain (dB)')
 
     for i in range(len(weights)):
-        ax2.plot(range(weights[i].size), np.unwrap(np.angle(weights[i])))
+        mask = np.argwhere(np.abs(weights[i]) < 0.01)[:, 0]
+        plot_arr = np.ma.masked_where(np.abs(weights[i]) < 0.01, np.unwrap(np.angle(weights[i])))
+        line, = ax2.plot(plot_arr, marker='o')
+        ax2.scatter(mask, np.zeros(mask.shape), marker='o', fc='white', ec=line.get_color())
+        ax2.set_xlim(-0.5, weights.shape[1]-0.5)
 
     major = Multiple(denominator=1)
     minor = Multiple(denominator=4)
@@ -56,27 +61,50 @@ def main():
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--resolution', type=float, help='angular resolution in degrees', default=0.5)
     parser.add_argument('--spacing', type=float, help='antenna spacing in meters', default=15.24)
-    parser.add_argument('--left-bound', type=float, help='left bound of FOV in degrees CW from boresight', default=-27.0)
-    parser.add_argument('--right-bound', type=float, help='right bound of FOV in degrees CW from boresight', default=27.0)
+    parser.add_argument('--left-bound', type=float, help='left bound of FOV in degrees CW from boresight', default=-30.0)
+    parser.add_argument('--right-bound', type=float, help='right bound of FOV in degrees CW from boresight', default=30.0)
+    parser.add_argument('--antennas-down', type=str, help='antennas not transmitting, format as 0,1,2,14', default='')
     parser.add_argument('antenna_pattern', type=str, help='.npz file with antenna pattern data')
     parser.add_argument('outdir', type=str, help='directory to put results and plots in')
     parser.add_argument('freqs', nargs='+', type=float, help='frequencies in kHz to optimize for')
     args = parser.parse_args()
 
+    assert 0.1 < args.resolution < 2.0, "--resolution invalid"
+    assert 2.0 < args.spacing < 20.0, "--spacing invalid"
+
     num_antennas = 16   # main array
+    bad_antennas = []
+    if args.antennas_down != '':
+        for entry in args.antennas_down.split(','):
+            val = int(entry)
+            assert (0 <= val < num_antennas), f"--antennas-down invalid input {args.antennas_down}"
+            bad_antennas.append(val)
+
     angular_res = args.resolution  # degrees
     left_bound = args.left_bound  # FOV boundary, in degrees right of boresight
+    assert -90 < left_bound < 0, "--left-bound invalid"
     right_bound = args.right_bound  # FOV boundary, in degrees right of boresight
+    assert 0 < right_bound < 90, "--right-bound invalid"
     elevation = 0       # degrees up from horizon
     antenna_spacing = args.spacing     # meters
     labels = []
+
+    if np.isclose(-left_bound, right_bound) and len(bad_antennas) == 0:
+        symmetric = True
+    else:
+        symmetric = False
 
     # Position of each antenna along y-axis
     antenna_positions = array_factor.default_antenna_positions(num_antennas, antenna_spacing)
 
     # Arrays of spherical coordinate points
     els = np.array([elevation])
-    azimuths = np.arange(-90, 90, angular_res)
+    if symmetric:
+        azimuths = np.arange(0, 90, angular_res)
+        vlines = (right_bound,)
+    else:
+        azimuths = np.arange(-90, 90, angular_res)
+        vlines = (left_bound, right_bound)
     passband = (left_bound, right_bound)
 
     def add_configuration(w, label):
@@ -85,12 +113,11 @@ def main():
         labels.append(label)
 
     # Common mode frequencies
-    freqs = [x * 1000 for x in args.freqs] # Hz
+    freqs = [x * 1000 for x in args.freqs]  # Hz
     ripples = [2.0, 3.0, 4.0, 5.0]  # dB
     sidelobe_levels = [-20, -17, -14]  # dB
     transition_widths = [5.0]  # degrees
-    population_size = 200
-    azimuthal_points = 200
+    population_size = 100
     num_trials = 10
 
     print("Ripples: {}".format(ripples))
@@ -104,8 +131,9 @@ def main():
         interp_data = np.interp(azimuths, el_factor['az'] - 90,
                                 el_factor['data'][70])  # 70 is the colatitude, in degrees
         interp_data -= interp_data.max()
+        interp_data = np.power(10, interp_data / 20)
         best_weights = []
-        best_scores = []
+        best_penalties = []
         perfect = False
         for ripple in ripples:
             if perfect:
@@ -113,26 +141,43 @@ def main():
             for sidelobe in sidelobe_levels:
                 for width in transition_widths:
                     weights = []
-                    scores = []
+                    penalties = []
                     for trial in range(num_trials):
-                        gs = GeneticSolver(num_antennas, antenna_spacing, freq, ripple, sidelobe, passband, width,
-                                           azimuthal_points, population_size, element_factor=el_factor)
+                        gs = GeneticSolver(
+                            num_antennas,
+                            antenna_spacing,
+                            freq,
+                            ripple,
+                            sidelobe,
+                            passband,
+                            width,
+                            azimuths,
+                            population_size,
+                            element_factor=interp_data,
+                            bad_antennas=bad_antennas
+                        )
                         add_configuration(gs.weights, 'Trial {}'.format(trial))
-                        scores.append(gs.best_score)
-                        if gs.best_score == 0.0:
+                        penalties.append(gs.best_penalty)
+                        if gs.best_penalty == 0.0:
                             break
 
                     weights = np.array(weights)
-                    scores = np.array(scores)
 
-                    best_score_idx = np.argsort(scores)[0]
-                    best_scores.append(scores[best_score_idx])
-                    best_weights.append(weights[best_score_idx, :])
+                    # ensure that all weights start out increasing with antenna index, avoids mirrored solutions
+                    # looking different.
+                    for i in range(weights.shape[0]):
+                        if np.angle(weights[i, 1]) < 0.0:
+                            weights[i] = weights[i].conj()
+                    penalties = np.array(penalties)
 
-                    perfect = (scores[best_score_idx] == 0.0)
+                    best_penalty_idx = np.argmin(penalties)
+                    best_penalties.append(penalties[best_penalty_idx])
+                    best_weights.append(weights[best_penalty_idx, :])
+
+                    perfect = (penalties[best_penalty_idx] == 0.0)
 
                     # Compute the array factor for each set of weights.
-                    af = array_factor.array_factor(weights, antenna_positions, freq, els, azimuths, el_factor=np.power(10, interp_data/20))
+                    af = array_factor.array_factor(weights, antenna_positions, freq, els, azimuths, el_factor=interp_data)
 
                     gains = [af[i, 0, :] for i in range(af.shape[0])]
 
@@ -140,19 +185,20 @@ def main():
                     title = '{:.3f} MHz, {:.1f}dB Ripple, {:.1f}dB Peak Sidelobe, {:.1f} degree Transition Width, {} Antennas' \
                             ''.format(freq * 1e-6, ripple, sidelobe, width, num_antennas)
                     filename = f'{args.outdir}/Genetic_Solutions_{freq*1e-6:.3f}MHz_{ripple:.1f}ripple_{sidelobe:.1f}sidelobe_{width:.1f}width_{num_antennas}antennas.png'
-                    plot_trials(weights, gains, azimuths, title, filename)
+
+                    plot_trials(weights, gains, azimuths, title, filename, vlines=vlines)
 
         best_weights = np.array(best_weights)
-        best_scores = np.array(best_scores)
+        best_penalties = np.array(best_penalties)
 
         best_weights_deg = np.rad2deg(np.unwrap(np.angle(best_weights), axis=-1))
 
-        for s, w in zip(best_scores, best_weights):
+        for s, w in zip(best_penalties, best_weights):
             variable_phases = np.rad2deg(np.unwrap(np.angle(w)))
-            print(f"Score: {s:.3f}\tPhases (deg): {variable_phases}")
+            print(f"Penalty: {s:.3f}\tPhases (deg): {variable_phases}")
 
         # Compute the array factor for each set of weights.
-        af = array_factor.array_factor(best_weights, antenna_positions, freq, els, azimuths, el_factor=np.power(10, interp_data/20))
+        af = array_factor.array_factor(best_weights, antenna_positions, freq, els, azimuths, el_factor=interp_data)
 
         gains = [af[i, 0, :] for i in range(af.shape[0])]
 
@@ -160,8 +206,10 @@ def main():
         with h5py.File(outfile, 'a') as f:
             group_name = f'{int(freq/1000):05d}'
             g = f.create_group(group_name)
-            g.create_dataset('phases', data=best_weights_deg)
-            g.create_dataset('scores', data=best_scores)
+            g.create_dataset('complex_phases', data=best_weights)
+            g.create_dataset('phases_deg', data=best_weights_deg)
+            g.create_dataset('antenna_mags', data=np.abs(best_weights))
+            g.create_dataset('penalties', data=best_penalties)
             g.create_dataset('array_factor', data=np.array(gains))
             g.create_dataset('grid', data=azimuths)
 
@@ -169,7 +217,7 @@ def main():
         title = '{:.3f} MHz'.format(freq * 1e-6)
         filename = '{}/Genetic_Solutions_{:.1f}MHz_{}antennas.png' \
                    ''.format(args.outdir, freq * 1e-6, num_antennas)
-        plot_trials(best_weights, gains, azimuths, title, filename)
+        plot_trials(best_weights, gains, azimuths, title, filename, vlines=vlines)
 
 
 if __name__ == '__main__':

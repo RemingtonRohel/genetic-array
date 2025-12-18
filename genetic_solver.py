@@ -12,31 +12,36 @@ class GeneticSolver:
     This is an attempt at recreating the method of Boeringer et al. (2005)
     https://ieeexplore-ieee-org.cyber.usask.ca/document/1377611
     """
-    def __init__(self, num_antennas, antenna_spacing, freq, pb_ripple, sb_gain, passband, transition_width, num_points,
-                 pop_size, element_factor=None):
+    def __init__(self, num_antennas, antenna_spacing, freq, pb_ripple, sb_gain, passband, transition_width, angles,
+                 pop_size, element_factor=None, bad_antennas: list = None):
         self._population = pop_size
         self._num_antennas = num_antennas
-        # Symmetric, and fix the end antennas to 0 phase
-        self._num_weights = int(np.ceil((num_antennas - 2) / 2))
+
+        self._symmetric = np.isclose(-passband[0], passband[1]) and (bad_antennas is None or len(bad_antennas) == 0)
+        self._sine_space = np.sin(np.deg2rad(angles))
+        if self._symmetric:
+            # Fix the end antennas to 0 phase, only use half the antennas
+            self._num_weights = int(np.ceil((num_antennas - 2) / 2))
+            # self._sine_space = ((2 * np.arange(num_points) / (num_points - 1)) - 1)[num_points//2:]
+            self._antenna_mask = np.ones(num_antennas, dtype=bool)
+        else:
+            # Fix the left-most antenna to 0 phase.
+            self._num_weights = num_antennas - len(bad_antennas) - 1
+            self._antenna_mask = np.array([not (x in bad_antennas) for x in range(num_antennas)], dtype=bool)
+            # self._sine_space = (2 * np.arange(num_points) / (num_points - 1)) - 1
+
+        self._ref_antenna = np.argwhere(self._antenna_mask)[0, 0]
         self._antenna_spacing = antenna_spacing
         self._freq = freq
 
         pb_lower_bound = -pb_ripple
         sb_upper_bound = sb_gain
 
-        self._sine_space = (2 * np.arange(num_points) / (num_points - 1)) - 1
-
         self._antenna_positions = antenna_spacing * (np.arange(self._num_antennas) - (self._num_antennas - 1) / 2)
         self._steering_matrix = np.exp(2j * np.pi * freq / c *
                                        np.einsum('i,j->ji', self._antenna_positions, self._sine_space))
 
-        angles = np.arcsin(self._sine_space) * 180 / np.pi
-        self.element_factor = None
-        if element_factor is not None:
-            interp_data = np.interp(angles, element_factor['az'] - 90,
-                                    element_factor['data'][70])  # 70 is the colatitude, in degrees
-            interp_data -= interp_data.max()
-            self.element_factor = np.power(10, interp_data / 20)
+        self.element_factor = element_factor
         upper_bounds = np.ones(angles.size) * sb_upper_bound
         upper_bounds[np.argwhere(angles > passband[0] - transition_width)] = np.inf
         # upper_bounds[np.argwhere(angles > passband[0])] = pb_upper_bound
@@ -82,7 +87,7 @@ class GeneticSolver:
         self._mut_range_dir = -1
         self._cross_dir = 1
 
-        self._scores = []
+        self._penalties = []
         self._weights = self.find_weights()
 
     def find_weights(self):
@@ -90,7 +95,7 @@ class GeneticSolver:
         which returns the final set of weights."""
         members = self.initialize_population()
         member_ff = self.calculate_far_field(members)
-        member_scores = self.cost(member_ff)
+        member_penalties = self.penalty(member_ff)
 
         # Initialize some important variables
         weights = np.ones(self._num_antennas)   # Start it off at uniform, just in case num_iterations = 0
@@ -100,12 +105,12 @@ class GeneticSolver:
         num_candidates = 10
         new_population = np.zeros((self._population + 2 * num_couples, self._num_weights))
         new_ff = np.zeros((self._population + 2 * num_couples, self._sine_space.size))
-        new_costs = np.zeros((self._population + 2 * num_couples))
-        min_costs = np.zeros(8)
+        new_penalties = np.zeros((self._population + 2 * num_couples))
+        min_penalties = np.zeros(8)
         while not found:
             new_population[:self._population, :] = members
             new_ff[:self._population, :] = member_ff
-            new_costs[:self._population] = member_scores
+            new_penalties[:self._population] = member_penalties
             children = []
 
             mut_rate, mut_range, cross_rate = self.get_params(iteration)
@@ -113,10 +118,10 @@ class GeneticSolver:
             for k in range(num_couples):
                 # Get the parents (best 2) from a random sampling of the population
                 candidates = random.sample(range(self._population), num_candidates)
-                idx = np.argmin(member_scores[candidates])
+                idx = np.argmin(member_penalties[candidates])
                 madre_idx = candidates[idx]
                 candidates.pop(idx)
-                idx = np.argmin(member_scores[candidates])
+                idx = np.argmin(member_penalties[candidates])
                 padre_idx = candidates[idx]
 
                 # Make 2 children from those parents
@@ -124,44 +129,42 @@ class GeneticSolver:
                                                     cross_rate, mut_rate, mut_range)
                 children += [child1, child2]
 
-            # Score the children
+            # Evaluate the children
             children_ff = self.calculate_far_field(np.array(children))
-            children_scores = self.cost(children_ff)
+            children_penalties = self.penalty(children_ff)
             new_population[self._population:, :] = children
             new_ff[self._population:, :] = children_ff
-            new_costs[self._population:] = children_scores
+            new_penalties[self._population:] = children_penalties
 
             # Only keep the best
-            sorted_indices = np.argsort(new_costs)
+            sorted_indices = np.argsort(new_penalties)
             members = new_population[sorted_indices[:self._population], :]
-            member_scores = new_costs[sorted_indices[:self._population]]
+            member_penalties = new_penalties[sorted_indices[:self._population]]
             member_ff = new_ff[sorted_indices[:self._population], :]
 
-            self._scores.append(member_scores[0])
-            min_costs[iteration % 8] = member_scores[0]
+            self._penalties.append(member_penalties[0])
+            min_penalties[iteration % 8] = member_penalties[0]
 
             if iteration % 8 == 7:
-                self.update_params(min_costs)
+                self.update_params(min_penalties)
                 self._cycle_idx += 1
                 if self._cycle_idx >= len(self._param_cycle):
                     self._cycle_idx = 0
-                min_costs = np.zeros(8)
+                min_penalties = np.zeros(8)
 
             # Found a solution! Exit early.
-            if member_scores[0] == 0:
+            if member_penalties[0] == 0:
                 found = True
 
             if iteration % 1000 == 0 and iteration != 0:
-                if (self._scores[iteration - 1000] - self.best_score) / self.best_score < 1e-4:
-                    # Score has stagnated - found a local or global minima
+                if (self._penalties[iteration - 1000] - self.best_penalty) / self.best_penalty < 1e-4:
+                    # Penalty has stagnated - found a local or global minima
                     found = True
 
-            weights = np.ones(self._num_antennas, dtype=np.complex128)
-            weights[1:self._num_weights+1] = np.exp(1j * members[0, :])
-            weights[self._num_weights+1:-1] = np.exp(1j * np.flip(members[0, :]))
+            weights = self.complexify_members(members[:1])[0]
             iteration += 1
             if found:
-                print("Iteration: {}\tCost: {}".format(iteration - 1, member_scores[0]))
+                print("Iteration: {}\tPenalty: {}".format(iteration - 1, member_penalties[0]))
                 # plt.plot(self._sine_space, self._upper_bound, label='Upper')
                 # plt.plot(self._sine_space, self._lower_bound, label='Lower')
                 # plt.plot(self._sine_space, member_ff[0, :], label='Example')
@@ -176,21 +179,21 @@ class GeneticSolver:
                 # plt.show()
         return weights
 
-    def update_params(self, costs):
+    def update_params(self, penalties):
         """Update the parameters and their directions if need be."""
         # Figure out how to adapt the parameters
         rate_idx = self._param_cycle[self._cycle_idx][0]
         range_idx = self._param_cycle[self._cycle_idx][1]
         cross_idx = self._param_cycle[self._cycle_idx][2]
 
-        rate_0_cost = np.min(costs[np.argwhere(self._parameter_orders[:, rate_idx] == 0)])
-        rate_1_cost = np.min(costs[np.argwhere(self._parameter_orders[:, rate_idx] == 1)])
-        range_0_cost = np.min(costs[np.argwhere(self._parameter_orders[:, range_idx] == 0)])
-        range_1_cost = np.min(costs[np.argwhere(self._parameter_orders[:, range_idx] == 1)])
-        cross_0_cost = np.min(costs[np.argwhere(self._parameter_orders[:, cross_idx] == 0)])
-        cross_1_cost = np.min(costs[np.argwhere(self._parameter_orders[:, cross_idx] == 1)])
+        rate_0_penalty = np.min(penalties[np.argwhere(self._parameter_orders[:, rate_idx] == 0)])
+        rate_1_penalty = np.min(penalties[np.argwhere(self._parameter_orders[:, rate_idx] == 1)])
+        range_0_penalty = np.min(penalties[np.argwhere(self._parameter_orders[:, range_idx] == 0)])
+        range_1_penalty = np.min(penalties[np.argwhere(self._parameter_orders[:, range_idx] == 1)])
+        cross_0_penalty = np.min(penalties[np.argwhere(self._parameter_orders[:, cross_idx] == 0)])
+        cross_1_penalty = np.min(penalties[np.argwhere(self._parameter_orders[:, cross_idx] == 1)])
 
-        if rate_0_cost < rate_1_cost:
+        if rate_0_penalty < rate_1_penalty:
             self._mut_rate_dir *= -1
         else:
             self._mut_rate_idx += self._mut_rate_dir
@@ -199,7 +202,7 @@ class GeneticSolver:
         elif self._mut_rate_idx == 0:
             self._mut_rate_dir = 1
 
-        if range_0_cost < range_1_cost:
+        if range_0_penalty < range_1_penalty:
             self._mut_range_dir *= -1
         else:
             self._mut_range_idx += self._mut_range_dir
@@ -208,7 +211,7 @@ class GeneticSolver:
         elif self._mut_range_idx == 0:
             self._mut_range_dir = 1
 
-        if cross_0_cost < cross_1_cost:
+        if cross_0_penalty < cross_1_penalty:
             self._cross_dir *= -1
         else:
             self._cross_idx += self._cross_dir
@@ -268,12 +271,25 @@ class GeneticSolver:
         """Randomly select 'population' sets of weights to initialize the algorithm."""
         return np.random.uniform(0, 1, (self._population, self._num_weights)) * 2 * np.pi
 
+    def complexify_members(self, members):
+        """Converts members from radian angles into complex weights, zeroing out non-transmitting antennas."""
+        if self._symmetric:
+            complex_members = np.ones((members.shape[0], self._num_antennas), dtype=np.complex64)
+            complex_members[:, 1:self._num_weights + 1] = np.exp(1j * members)
+            complex_members[:, self._num_weights + 1:-1] = np.fliplr(np.exp(1j * members))
+        else:
+            complex_members = np.zeros((members.shape[0], self._num_antennas), dtype=np.complex64)
+            tx_indices = np.argwhere(self._antenna_mask)[:, 0].tolist()
+            tx_indices.remove(self._ref_antenna)
+            tx_indices = np.array(tx_indices)
+            complex_members[:, tx_indices] = np.exp(1j * members)
+            complex_members[:, self._ref_antenna] = 1.0 + 0.0j  # reference antenna
+        return complex_members
+
     def calculate_far_field(self, members):
         """Computes the far field pattern for the given members."""
-        symmetric_members = np.zeros((members.shape[0], self._num_antennas))
-        symmetric_members[:, 1:self._num_weights+1] = members
-        symmetric_members[:, self._num_weights+1:-1] = np.fliplr(members)
-        ff = self.array_factor(np.exp(1j * symmetric_members)) * self.element_factor
+        complex_members = self.complexify_members(members)
+        ff = self.array_factor(complex_members) * self.element_factor
         scale = 1 / np.max(np.abs(ff), axis=1)    # Normalize so that max amplitude is 1 in each far field pattern
         ff = np.einsum('i,ij->ij', scale, ff)
         return 20 * np.log10(np.abs(ff))
@@ -301,9 +317,9 @@ class GeneticSolver:
 
         return af
 
-    def cost(self, ff_pattern):
-        """Compute the cost function for a given far-field pattern"""
-        costs = np.zeros(ff_pattern.shape[0])
+    def penalty(self, ff_pattern):
+        """Compute the penalty function for a given far-field pattern"""
+        penalties = np.zeros(ff_pattern.shape[0])
         for i in range(ff_pattern.shape[0]):
 
             over_upper = np.argwhere(ff_pattern[i, :] > self._upper_bound)
@@ -318,19 +334,22 @@ class GeneticSolver:
                 plt.legend()
                 plt.show()
 
-            over_cost = np.sum(np.square(ff_pattern[i, over_upper] - self._upper_bound[over_upper]))
-            under_cost = np.sum(np.square(self._lower_bound[under_lower] - ff_pattern[i, under_lower]))
-            costs[i] = over_cost + under_cost
-        return costs
+            over_penalty = np.sum(np.square(ff_pattern[i, over_upper] - self._upper_bound[over_upper]))
+            under_penalty = np.sum(np.square(self._lower_bound[under_lower] - ff_pattern[i, under_lower]))
+            penalties[i] = over_penalty + under_penalty
+        return penalties
 
     @property
     def weights(self):
         return self._weights
 
     @property
-    def best_score(self):
-        return self._scores[-1]
+    def best_penalty(self):
+        return self.all_penalties[-1]
 
     @property
-    def all_scores(self):
-        return self._scores
+    def all_penalties(self):
+        penalties = self._penalties
+        if self._symmetric:
+            penalties = [2.0 * x for x in penalties]
+        return penalties
