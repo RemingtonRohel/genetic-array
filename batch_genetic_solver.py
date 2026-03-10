@@ -166,7 +166,9 @@ def main():
                     # ensure that all weights start out increasing with antenna index, avoids mirrored solutions
                     # looking different.
                     for i in range(weights.shape[0]):
-                        if np.angle(weights[i, 1]) < 0.0:
+                        mags = np.abs(weights[i])
+                        non_zero_weights = weights[i, mags > 0.0]
+                        if np.angle(non_zero_weights[1]) < 0.0:
                             weights[i] = weights[i].conj()
                     penalties = np.array(penalties)
 
